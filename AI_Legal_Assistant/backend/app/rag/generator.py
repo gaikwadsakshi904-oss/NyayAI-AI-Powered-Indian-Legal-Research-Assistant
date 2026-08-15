@@ -1,293 +1,212 @@
-﻿from openai import OpenAI
+import os
+import time
 
-from ..config import (
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
+from google import genai
+
+
+GEMINI_MODEL = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-3.7-flash"
 )
 
-from ..utils.safety import add_disclaimer
+GEMINI_API_KEY = os.getenv(
+    "GEMINI_API_KEY"
+)
 
 
-# ==========================================================
-# OPENAI CONFIGURATION
-# ==========================================================
+def build_context(results):
 
-# Set this to True only when your OpenAI account has credits.
-#
-# Currently your account has:
-# credit_balance_exhausted
-#
-# Therefore we keep OpenAI disabled and use the
-# FAISS legal-document retrieval fallback.
-#
-USE_OPENAI = False
+    if not results:
+        return "No relevant legal information was retrieved."
 
+    parts = []
 
-client = None
+    for index, result in enumerate(results, start=1):
 
-if USE_OPENAI and OPENAI_API_KEY:
+        if not isinstance(result, dict):
+            continue
 
-    client = OpenAI(
-        api_key=OPENAI_API_KEY
-    )
-
-
-# ==========================================================
-# SYSTEM PROMPT
-# ==========================================================
-
-SYSTEM_PROMPT = """
-You are NyayAI, an AI-powered Indian legal research assistant.
-
-Answer questions using ONLY the legal context provided by
-the retrieval system.
-
-Rules:
-
-1. Do not invent legal provisions, sections, cases, or facts.
-2. Use only the retrieved legal documents.
-3. Explain legal information in simple language.
-4. Mention the relevant source documents.
-5. If the context is insufficient, clearly say so.
-6. Do not provide professional legal advice.
-"""
-
-
-# ==========================================================
-# FALLBACK ANSWER
-# ==========================================================
-
-def fallback_answer(
-    question: str,
-    retrieved_chunks: list[dict]
-) -> str:
-
-    if not retrieved_chunks:
-
-        return add_disclaimer(
-            "I could not find relevant information "
-            "in the available legal documents."
-        )
-
-
-    answer_parts = [
-
-        "The following relevant information was "
-        "retrieved from the NyayAI legal knowledge base:"
-    ]
-
-
-    for index, chunk in enumerate(
-        retrieved_chunks[:5],
-        start=1
-    ):
-
-        document = chunk.get(
+        document = result.get(
             "document_name",
-            "Unknown document"
+            result.get(
+                "document",
+                "Unknown document"
+            )
         )
 
-        text = chunk.get(
-            "text",
-            ""
-        )
-
-        score = chunk.get(
+        score = result.get(
             "score",
             0
         )
 
+        text = result.get(
+            "text",
+            ""
+        )
 
-        answer_parts.append(
-
+        parts.append(
             f"""
-Relevant Source {index}:
+SOURCE {index}
 
 Document:
 {document}
 
 Relevance Score:
-{score:.4f}
+{score}
 
 Legal Information:
 {text}
 """
         )
 
+    if not parts:
+        return "No usable legal information was retrieved."
 
-    return add_disclaimer(
-        "\n".join(answer_parts)
-    )
+    return "\n".join(parts)
 
 
-# ==========================================================
-# GENERATE ANSWER
-# ==========================================================
-
-def generate_answer(
+def generate_with_gemini(
     question: str,
-    retrieved_chunks: list[dict]
-) -> str:
+    context
+):
 
-    # ------------------------------------------------------
-    # No retrieved information
-    # ------------------------------------------------------
+    if not GEMINI_API_KEY:
 
-    if not retrieved_chunks:
-
-        return add_disclaimer(
-
-            "No relevant legal information was found "
-            "in the available legal documents."
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set."
         )
 
-
-    # ------------------------------------------------------
-    # OpenAI disabled
-    # ------------------------------------------------------
-
-    if not USE_OPENAI:
-
-        print(
-            "OpenAI generation disabled."
-        )
-
-        print(
-            "Using legal-document retrieval fallback..."
-        )
-
-        return fallback_answer(
-            question,
-            retrieved_chunks
-        )
-
-
-    # ------------------------------------------------------
-    # OpenAI client unavailable
-    # ------------------------------------------------------
-
-    if client is None:
-
-        print(
-            "OpenAI client unavailable."
-        )
-
-        print(
-            "Using legal-document retrieval fallback..."
-        )
-
-        return fallback_answer(
-            question,
-            retrieved_chunks
-        )
-
-
-    # ------------------------------------------------------
-    # Build legal context
-    # ------------------------------------------------------
-
-    context_parts = []
-
-
-    for index, chunk in enumerate(
-        retrieved_chunks,
-        start=1
-    ):
-
-        context_parts.append(
-
-            f"""
-SOURCE {index}
-
-Document:
-{chunk.get(
-    "document_name",
-    "Unknown"
-)}
-
-Category:
-{chunk.get(
-    "document_category",
-    "Unknown"
-)}
-
-Relevance Score:
-{chunk.get(
-    "score",
-    0
-):.4f}
-
-Content:
-{chunk.get(
-    "text",
-    ""
-)}
-"""
-        )
-
-
-    context = "\n".join(
-        context_parts
+    client = genai.Client(
+        api_key=GEMINI_API_KEY
     )
 
+    context_text = build_context(
+        context
+    )
 
-    # ------------------------------------------------------
-    # User prompt
-    # ------------------------------------------------------
+    prompt = f"""
+You are NyayAI, an Indian legal research assistant.
 
-    user_prompt = f"""
+Answer the user's question ONLY using the legal information
+provided below.
 
-LEGAL DOCUMENT CONTEXT:
+IMPORTANT RULES:
 
-{context}
+- Give a direct answer first.
+- Explain the answer in simple language.
+- Use relevant sections when they appear in the source.
+- Do not invent laws, sections, cases, penalties, dates,
+  or legal rights.
+- Do not use outside information.
+- Do not copy large portions of the source.
+- If the sources do not contain enough information,
+  clearly say that.
+- Do not provide personalized legal advice.
+- Mention the source document.
 
+LEGAL KNOWLEDGE BASE:
+
+{context_text}
 
 USER QUESTION:
 
 {question}
 
+Return the answer using this structure:
 
-Answer the question using ONLY the supplied legal context.
+Direct Answer:
+[answer]
 
-Explain the answer clearly and concisely.
+Explanation:
+[short explanation]
 
-At the end provide:
+Relevant Law:
+[relevant sections if available]
 
-Sources:
-- Document names used.
+Source:
+[source document]
 """
 
+    last_error = None
 
-    # ------------------------------------------------------
-    # OpenAI request
-    # ------------------------------------------------------
+    for attempt in range(3):
+
+        try:
+
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt
+            )
+
+            answer = getattr(
+                response,
+                "text",
+                None
+            )
+
+            if not answer:
+                raise RuntimeError(
+                    "Gemini returned an empty response."
+                )
+
+            return answer.strip()
+
+        except Exception as error:
+
+            last_error = error
+
+            error_text = str(error)
+
+            print(
+                f"Gemini attempt {attempt + 1}/3 failed:"
+            )
+
+            print(error_text)
+
+            # Retry temporary server errors.
+            if (
+                "503" in error_text
+                or "UNAVAILABLE" in error_text
+                or "high demand" in error_text.lower()
+            ):
+
+                if attempt < 2:
+
+                    time.sleep(
+                        2 ** attempt
+                    )
+
+                    continue
+
+            break
+
+    raise RuntimeError(
+        f"Gemini generation failed: {last_error}"
+    )
+
+
+def generate_answer(
+    question: str,
+    context
+):
 
     try:
 
-        response = client.responses.create(
-
-            model=OPENAI_MODEL,
-
-            instructions=SYSTEM_PROMPT,
-
-            input=user_prompt,
+        answer = generate_with_gemini(
+            question,
+            context
         )
 
-
-        return add_disclaimer(
-
-            response.output_text
+        print(
+            "Gemini generation successful."
         )
 
-
-    # ------------------------------------------------------
-    # API error fallback
-    # ------------------------------------------------------
+        return answer
 
     except Exception as error:
 
         print(
-            "\nOpenAI generation unavailable."
+            "Gemini generation unavailable."
         )
 
         print(
@@ -298,8 +217,14 @@ Sources:
             "Using legal-document retrieval fallback..."
         )
 
+        context_text = build_context(
+            context
+        )
 
-        return fallback_answer(
-            question,
-            retrieved_chunks
+        return (
+            "The AI generation service is temporarily "
+            "unavailable.\n\n"
+            "Relevant legal information retrieved "
+            "from the NyayAI knowledge base:\n\n"
+            + context_text
         )
