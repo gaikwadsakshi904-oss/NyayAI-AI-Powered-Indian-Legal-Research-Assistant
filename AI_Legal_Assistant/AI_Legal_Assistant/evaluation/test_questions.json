@@ -1,0 +1,14 @@
+[
+  {
+    "question": "What basic rights are available to a consumer?",
+    "expected_source_type": "consumer_protection"
+  },
+  {
+    "question": "What should a consumer check before signing a contract?",
+    "expected_source_type": "contract"
+  },
+  {
+    "question": "What is the purpose of a legal notice?",
+    "expected_source_type": "notice"
+  }
+]

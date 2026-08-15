@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+node_modules/
+dist/
+temp_uploads/
+backend/vector_store/faiss_index.bin
+backend/models/chunks.json
+backend/models/metadata.json
